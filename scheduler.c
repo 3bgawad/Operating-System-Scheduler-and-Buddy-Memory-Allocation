@@ -1,805 +1,961 @@
-#include <stdio.h>
-#include <string.h>
 #include "headers.h"
-#include <stdlib.h>
-#include <sys/sem.h>
-#include <math.h>
-#include <sys/time.h>
-#include <sys/sem.h>
-int pauseClk;
-int lastEntryStart;
-int sem;
-union Semun
+#include "Queue.h"
+#include "LinkedList.h"
+#include "PriorityQueue.h"
+
+struct PCB * pcbPointer=NULL;
+enum Status{Free, Busy};
+
+void Merge(int address, int size);
+void DeAllocate_memory(int address, int size);
+int Allocate_memory(int size);
+
+//memory management arrays creation 
+//Initially the memory is divided into 4 partitions each have 256 bytes
+//The values stored in the array refears to block's starting address in memory
+int blocks_32[32];
+int blocks_64[16];
+int blocks_128[8];
+int blocks_256[4] = {0, 256, 512, 768};
+
+struct msgbuff
 {
-    int val;               		/* value for SETVAL */
-    struct semid_ds *buf;  	/* buffer for IPC_STAT & IPC_SET */
-    ushort *array;          	/* array for GETALL & SETALL */
-    struct seminfo *__buf;  	/* buffer for IPC_INFO */
-    void *__pad;
+    long mtype;
+    struct processData mData;
 };
-void down(int sem)
+
+int quantum,t1,t2;
+void Handler(int signum);
+
+void ResumeProcess()
 {
-    struct sembuf p_op;
+    printf("Procss with pid %d\n is resumed",pcbPointer->pid);
+    kill(pcbPointer->pid,SIGCONT);
+    pcbPointer->state=Running;
+}
 
-    p_op.sem_num = 0;
-    p_op.sem_op = -1;
-    p_op.sem_flg = !IPC_NOWAIT;
-
-    if(semop(sem, &p_op, 1) == -1)
-    {
-        perror("Error in down()");
-        exit(-1);
-    }
+void Alarm_Handler(int signum)
+{
+    printf("From the alarm handler\n");
+    kill(pcbPointer->pid,SIGSTOP);
 }
 
 
-void up(int sem)
+int main(int argc, char * argv[])
 {
-    struct sembuf v_op;
-
-    v_op.sem_num = 0;
-    v_op.sem_op = 1;
-    v_op.sem_flg = !IPC_NOWAIT;
-
-    if(semop(sem, &v_op, 1) == -1)
-    {
-        perror("Error in up()");
-        exit(-1);
-    }
-}
-
-
-
-////CIRCULAR LINKED LIST
-int starting = 1;
-struct node
-{
-    int data;
-    struct node *next;
-};
-struct node *head = NULL;
-struct node *current = NULL;
-struct node *tail = NULL;
-struct node *ptrTraverse;
-
-int length()
-{
-    int length = 1;
-
-    //if list is empty
-    if (head == NULL)
-    {
-        return 0;
-    }
-    if (head->next == tail)
-    {
-        return 2;
-    }
-
-    current = head->next;
-
-    while (current != head)
-    {
-        length++;
-        current = current->next;
-    }
-
-    return length;
-}
-bool isEmptyCircular()
-{
-    return (head == NULL);
-}
-
-//insert link at the first location
-void insert(int data)
-{ //create a link
-    struct node *newdata = (struct node *)malloc(sizeof(struct node));
-    newdata->data = data;
-    if (isEmptyCircular())
-    {
-        starting = 1;
-        head = newdata;
-        tail = newdata;
-        head->next = tail;
-        ptrTraverse = head;
-        //printf("\n inserted %d \n", head->data);
-    }
-    else
-    {
-        //point it to old first node
-        newdata->next = tail->next;
-        tail->next = newdata;
-        tail = newdata;
-        //printf("\n inserted %d \n", newdata->data);
-    }
-}
-
-//delete first item
-void deleteNode(int key)
-{
-    if (head->next == head)
-    {
-        head = NULL;
-        tail = NULL;
-        ptrTraverse = NULL;
-        return;
-    }
-    //save reference to first link
-    struct node *tempLink = head;
-    struct node *tempLink2 = head->next;
-    if (head->data == key)
-    {
-        head = head->next;
-        ptrTraverse = head;
-        tail->next = head;
-        starting = 1;
-    }
-    while (tempLink2->data != key)
-    {
-        if (tempLink2 == head)
-        {
-            return;
-        }
-        tempLink2 = tempLink2->next;
-        tempLink = tempLink->next;
-    }
-    int g = 0;
-    if (ptrTraverse == tempLink2)
-    {
-        g = 1;
-    }
-    tempLink->next = tempLink2->next;
-    if (g == 1)
-    {
-        ptrTraverse = tempLink;
-    }
-    if (tail->data == key)
-    {
-        tail = tempLink;
-    }
-    //return the deleted link
-}
-bool find(int key)
-{
-    if (head == NULL)
-    {
-        return false;
-    }
-
-    if (head->data == key)
-    {
-        return true;
-    }
-    struct node *tempLink = head->next;
-    while (tempLink != head)
-    {
-        if (tempLink->data == key)
-        {
-            return true;
-        }
-        tempLink = tempLink->next;
-    }
-    return false;
-}
-
-//display the list
-void printList()
-{
-
-    struct node *ptr = head;
-    //printf("\n[ ");
-    if (head->next == head)
-    {
-        //printf("\n %d \n", head->data);
-    }
-
-    //start from the beginning
-    if (head != NULL)
-    {
-        while (ptr->next != head)
-        {
-            //printf("\n %d \n", ptr->data);
-            ptr = ptr->next;
-        }
-    }
-
-    //printf(" ]\n");
-}
-//END OF CIRCULAR LINKED LIST
-
-//Function Area
-struct nodePCB *roundRobinGetId();
-void recieveMessages();
-void addProcesstoPCB(Process process);
-void forkProcess(int processid, char *argv[]);
-
-struct nodePCB *findMinRemainingTime();
-struct nodePCB *findPCB(int id);
-struct nodePCB *findMinimumPrio();
-
-void release(struct memory **memory, int starting, int end);
-void allocate(int size, int *startmem, int *endmem);
-
-int processid;
-void handler(int signum);
-void alarmDone(int signum);
-void processDone(int signum);
-void childStarted(int signum);
-void pauseProcess();
-int startingTime = 0;
-int processarrived = 0;
-
-int first = 1;
-int firstime = 0;
-int shmid;
-int shmid_process;
-key_t msgGeneratorScheduler; //the message queue between the scheduler and the process generator
-int finished = 0;            //marking finished processes
-int finishCLk = 0;
-FILE *fptr;
-FILE *mem;
-int mode;
-pid_t processpid;
-int processTerminated = 0;
-int processFirstTime = 0;
-int STRNcondition = 0;
-int remainTimeProcess = 0;    //remaining time of a process;
-int totalNumberProcesses = 0; //marks the total number of processes
-
-int *process_id;
-int *process_quantum;
-
-int arrivedNumber = 0;
-pid_t scheduleprocesspid;
-
-bool processRunning;
-
-struct nodePCB *currProcess = NULL;
-
-bool allProcessesArrived = false;
-
-float runningTimeSum = 0;
-float WTAsum = 0;
-float WTAsumsquared = 0;
-float waitingsum = 0;
-struct itimerval it_val;
-int *memorysizes;
-int main(int argc, char *argv[])
-{
-    shmid = shmget(12000, 4096, IPC_CREAT | 0644);      //first byte is no of processes , second byte is no of arrived processes rest is processes details
-    memorysizes= (int *)shmat(shmid, (void *)0, 0);
-     int size=11;
-	memArray=(struct memory**)malloc(sizeof(struct memory*)*size); //array of pointers with size 11
-	for(int i=0;i<size;i++)
-	{
-		memArray[i]=NULL;
-	}
-	memArray[10]=(struct memory*)malloc(sizeof(struct memory));
-	memArray[10]->next=NULL;
-	memArray[10]->starting=0;
-	memArray[10]->end=1024-1;
-    mem=fopen("memory.log","w");
-    fflush(mem);
-    fprintf(mem, "At time x allocated y bytes for process z from i to j \n");
-    fflush(mem);
-    fptr = fopen("scheduler.log", "w");
-    fflush(fptr);
-    fprintf(fptr, "# At time process y state arr w total z remain y wait k \n");
-    fflush(fptr);
-    //signal(SIGINT, deletehandler);
-    signal(SIGUSR1, processDone);
-    signal(SIGALRM, alarmDone);
-    //signal(SIGUSR2, childStarted);
-    //signal(SIGTERM, processDone);
-    shmid_process = shmget(14000, 5, IPC_CREAT | 0644); //first byte is no of processes , second byte is no of arrived processes rest is processes details
-    process_quantum = (int *)shmat(shmid_process, (void *)0, 0); //number of processes
-    sem = semget(12345, 1, 0666|IPC_CREAT);
-    if(sem==-1)
-    {
-        perror("Error in create sem  ");
-        exit(-1);
-    
-    }
-    union Semun semun;
-    semun.val = 1;  	/* initial value of the semaphore, Binary semaphore */
-    if(semctl(sem, 0, SETVAL, semun) == -1)
-    {
-        perror("Error in semctl");
-        exit(-1);
-    }
-    //printf("\nselected algo is %s \n", argv[0]);
-    msgGeneratorScheduler = msgget(12613, IPC_CREAT | 0644); //message queue between process generator and scheduler
-    if (*argv[0] == '1')                                     //HPF sheduler
-    {
-        //printf("\n HPF is choosen \n");
-        mode = 1;
-    }
-    else if (*argv[0] == '2')
-    {
-        //printf("\n STRN is choosen \n");
-        mode = 2;
-    }
-    else if (*argv[0] == '3')
-    {
-        //printf("\n RR is choosen \n");
-        mode = 3;
-    }
-    else
-    {
-        exit(-1);
-        return 0;
-    }
-    // totalNumberProcesses = __INT16_MAX__; //since i dont know the number of processes the real value will arrive when the dummy variable arrives
-
-    arrivedNumber = 0; //arrival number is 0 at the beginning
-
-    finished = 0; // number of finished processes is 0 at the end
-
-    processRunning = false; //at the beginning no process is running
-
-    allProcessesArrived = false;
-
-    totalNumberProcesses = __INT_MAX__;
-
     initClk();
-    //printf("\n total number of processes is %d \n", totalNumberProcesses);
+    signal(SIGUSR1,Handler);
+    signal(SIGALRM, Alarm_Handler);
 
-    while (finished < totalNumberProcesses)
-    {
-        recieveMessages();
-        //printf("\n 5555555555555555555555555555555555555 \n");
+    //Definitions
+    int receive;
+    int algorithmNo;
+    int pcount;
+    double sum_WTA=0;
+    double sum_Waiting=0;
+    double sum_RunningTime=0;
+    key_t msgqid;
+    struct msgbuff message;
+    struct processData pData;
+    struct PCB pcbBlock;
+    struct node *pcbFind=NULL;
     
-        if (finished == totalNumberProcesses)
-        {
-            break;
-        }
-        if (mode == 1)
-        {
-            currProcess = findMinimumPrio();
-            //printf("\n currProcess id is %d \n",currProcess->processid);
-        }
-        else if (mode == 2)
-        {
-            currProcess = findMinRemainingTime();
-        }
-        else if (mode == 3)
-        {
-            currProcess = roundRobinGetId();
-      
-           // printf("\n currProcess id is %d \n",currProcess->processid);
-        }
+    //defining the output files for write
+    FILE *logFile = fopen("scheduler.log", "w");
+    FILE *prefFile = fopen("scheduler.pref", "w");
+    FILE * sizeP = fopen("memory.log", "w");
+    
+    fprintf(logFile, "\n#At time x process y state arr w total z remain y wait k\n");
 
+    //Initialize for memory blocks all other arrays with -1
+    for (int i = 0; i < 32; i++)
+        blocks_32[i]=-1;
+    for (int i = 0; i < 16; i++)
+        blocks_64[i]=-1;
+    for (int i = 0; i < 8; i++)
+        blocks_128[i]=-1;
 
-        //printf("\n at line 366: process id scheduled is %d \n", processid);
-        int RRquantum = 1;
-        if (currProcess->pid == -1) //check if the process hasnt been forked before
+    fprintf(sizeP, "\n#At time x allocated y bytes for process z from i to j\n");
+    fprintf(logFile, "\n#At time x process y state arr w total z remain y wait k\n");
+    
+
+    //HPF
+    PQueue HPF_readyQueue;
+    PQueueInit(&HPF_readyQueue);
+    //SRTN
+    PQueue SRTN_readyQueue; 
+    PQueueInit(&SRTN_readyQueue);
+    //RR
+    Queue RR_readyQueue;
+    queueInit(&RR_readyQueue, sizeof(struct processData));
+    //SJF
+    PQueue SJF_readyQueue;
+    PQueueInit(&SJF_readyQueue);
+
+    //scan the count of the process
+    sscanf(argv[2],"%d",&pcount);
+    int Num_processes=pcount;
+    double WTAArray[pcount];
+    //Receive the processes from message queue and add to ready queue.
+    msgqid = msgget(1000, 0644);
+    sscanf(argv[1], "%d", &algorithmNo);
+    printf("\nthe chosen algorithm is: %s\n",argv[1]);
+    switch(algorithmNo)
+    {
+        //HPF
+        case 1:
+        receive= msgrcv(msgqid, &message, sizeof(message.mData), 0, !IPC_NOWAIT);
+        pData = message.mData;
+        printf("\nTime = %d process with id = %d recieved\n", getClk(), pData.id);
+        
+        push(&HPF_readyQueue, pData.priority, pData);
+        
+        pcbBlock.state = 0;
+        pcbBlock.executionTime = 0;
+        pcbBlock.remainingTime = pData.runningtime;
+        pcbBlock.waitingTime = 0;
+        insertFirst(pData.id, pcbBlock);
+        printf("\nPCB created for process with id = %d\n", pData.id);
+
+        while (pcount!=0)
         {
-            processRunning = true; //to show that a process is running so other process is scheduled
-            forkProcess(processid, argv);
-            if (first == 1)
+            printf("\nCurrent time = %d", getClk());
+            receive = msgrcv(msgqid, &message, sizeof(message.mData), 0, IPC_NOWAIT);
+            while (receive != -1)
             {
-                firstime = currProcess->arrival;
-                first = 0;
-            }
-            if (mode == 3)
-            {
-                it_val.it_value.tv_sec =RRquantum;
-                it_val.it_value.tv_usec =50000;
-                it_val.it_interval.tv_sec = 0;
-                it_val.it_interval.tv_usec=0;
-                if (setitimer(ITIMER_REAL, &it_val, NULL) == -1)
-                {
-                    perror("error calling setitimer()");
-                    exit(1);
-                }
-                //alarm(RRquantum); //round robin quantum
-            }
-            
+                pData = message.mData;
+                printf("\nTime = %d process with id = %d recieved\n", getClk(), pData.id);
+                push(&HPF_readyQueue, pData.priority, pData); //enqueue the data in the ready queue
                 
-            startingTime = getClk();                                 //starting time of process
-            currProcess->wait = startingTime - currProcess->arrival; //set the wait as response time
-            fflush(fptr);
-            fprintf(fptr, "At time %d process %d started arr %d total %d remain %d wait %d \n", startingTime, currProcess->processid, currProcess->arrival, currProcess->runtime, currProcess->remainingtime, currProcess->wait);
-            fflush(fptr);
-            currProcess->state = 1; //the process is running
-        }
-        else
-        {
-            processRunning = true; //to show that a process is running so other process is scheduled
-            if (mode == 3)
-            {
-                it_val.it_value.tv_sec =RRquantum;
-                it_val.it_value.tv_usec =50000;
-                it_val.it_interval.tv_sec = 0;
-                it_val.it_interval.tv_usec=0;
-                if (setitimer(ITIMER_REAL, &it_val, NULL) == -1)
-                {
-                    perror("error calling setitimer()");
-                    exit(1);
-                }
-                kill(currProcess->pid,SIGCONT);
-                //alarm(RRquantum); //starting time of process
-            }
-            else
-            {               
-             kill(currProcess->pid, SIGCONT);
-            }
+                //Creating PCB
+                pcbBlock.state = 0;
+                pcbBlock.executionTime = 0;
+                pcbBlock.remainingTime = pData.runningtime;
+                pcbBlock.waitingTime = 0;
             
-            startingTime = getClk();
-            currProcess->wait += startingTime - currProcess->lastexectime;
-            fflush(fptr);
-            fprintf(fptr, "At time %d process %d resumed arr %d total %d remain %d wait %d\n", startingTime, currProcess->processid, currProcess->arrival, currProcess->runtime, currProcess->remainingtime, currProcess->wait);
-            fflush(fptr);
-            currProcess->state = 1; //the process is running
-        }
-        //printf("\n i finished a process with finished number = %d and finished clock = %d \n", finished, getClk());
-    }
-    FILE *pref;
-    pref = fopen("scheduler.pref", "w");
+                insertFirst(pData.id, pcbBlock);
+                printf("\nPCB created for process with id = %d\n", pData.id);
+                receive = msgrcv(msgqid, &message, sizeof(message.mData), 0, IPC_NOWAIT);
+                
+            }
+            pData=pop(&HPF_readyQueue);
+            //find the pcb of the deueued process
+            pcbFind = find(pData.id);
+            pcbPointer = &(pcbFind->data);
+            pcbPointer->waitingTime=getClk()-(pData.arrivaltime)-(pcbPointer->executionTime);
+            // write in the output file the process data
+            fprintf(logFile, "At time %d process %d started arr %d total %d remain %d wait %d\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime);
 
-    for (int i = 0; i < totalNumberProcesses; i++)
-    {
-    }
-    //printf(" \nlast time is %d \n ", finishCLk);
-    fprintf(pref, "CPU utilization = %f \n", runningTimeSum/(float)((finishCLk - firstime) ) * 100.0);
-    fprintf(pref, "Avg WTA = %.2f\n", ((WTAsum / (totalNumberProcesses))));
-    fprintf(pref, "Avg Waiting = %.2f\n", (waitingsum / (totalNumberProcesses)));
-    float avg = WTAsum / (totalNumberProcesses);
-    float avg2 = WTAsumsquared / (totalNumberProcesses);
-    float avg22 = avg * avg;
-    float variance = avg2 - avg22;
-    fprintf(pref, "Std WTA = %.2f\n", sqrt(variance));
-    //printf(" \n all processes finished \n");
-    fclose(fptr);
-    fclose(pref);
-    destroyClk(false);
-    shmctl(shmid_process, IPC_RMID, (struct shmid_ds *)0);
-    exit(shmid_process);
-}
+            //forkprocess
+            printf("\nIam forking a new process time = %d\n", getClk());
+            int pid=fork();
+            pcount--;
+            pcbPointer->pid=pid;
+            if (pid == -1)
+            perror("error in fork");
 
-//////////f///////////////////////////FUnctions Area////////////////////////
-
-struct nodePCB *findMinimumPrio()
-{
-    if (headPCB == NULL)
-    {
-        return NULL;
-    }
-    else if (headPCB->next == NULL)
-    {
-        return headPCB;
-    }
-    struct nodePCB *traverseptr = headPCB;
-    struct nodePCB *minPrio = headPCB;
-    int min = __INT_MAX__;
-    while (traverseptr != NULL)
-    {
-        if (traverseptr->priority < min)
-        {
-            min = traverseptr->priority;
-            minPrio = traverseptr;
-        }
-        traverseptr = traverseptr->next;
-    }
-    return minPrio;
-}
-struct nodePCB *findMinRemainingTime()
-{
-    if (headPCB == NULL)
-    {
-        return NULL;
-    }
-    else if (headPCB->next == NULL)
-    {
-        return headPCB;
-    }
-    struct nodePCB *traverseptr = headPCB;
-    struct nodePCB *minRemaining = headPCB;
-    int min = __INT_MAX__;
-    while (traverseptr != NULL)
-    {
-        if (traverseptr->remainingtime < min)
-        {
-            min = traverseptr->remainingtime;
-            minRemaining = traverseptr;
-        }
-        traverseptr = traverseptr->next;
-    }
-    return minRemaining;
-}
-
-struct nodePCB *findPCB(int id)
-{
-    if (headPCB == NULL)
-    {
-        return NULL;
-    }
-    else if (headPCB->next == NULL)
-    {
-        return headPCB;
-    }
-    struct nodePCB *traverseptr = headPCB;
-    while (traverseptr != NULL)
-    {
-        if (traverseptr->processid == id)
-        {
-            return traverseptr;   
-        }
-        else
-        {
-            traverseptr=traverseptr->next;
-        }
-
-    }
-    return NULL;
-}
-
-struct nodePCB *roundRobinGetId()
-{
-    if (starting == 1)
-    {
-        ptrTraverse = head;
-        starting = 2;
-    }
-    else
-    {
-        //printList();
-        ptrTraverse = ((ptrTraverse)->next);
-    }
-    
-    processid = ((ptrTraverse)->data);
-    //printf("\n process id is %d \n",processid);
-    return findPCB(processid);
-}
-void recieveMessages() //called in case of processes arrives, now if we call this function we are waiting for a process to come
-{                      // then it gets all processes that arrived at the same time and updates the Queue
-    while (1)
-    {
-        int rec_val;
-        Process process;
-        //printf("\n waiting for process \n");
-        rec_val = msgrcv(msgGeneratorScheduler, &process, sizeof(Process), 0, !IPC_NOWAIT); //sleep in case nothing arrives and wait for a signal to come to schedule another process
-        if (rec_val == -1)
-        {
-            //printf("\n in recieve messages: a signal arrived so get out and continue scheduling \n");
-            if(headPCB!=NULL || finished==totalNumberProcesses)
+            else if (pid == 0)
             {
-            break;
+                printf("\ntest the forking\n");
+                char buf[20];
+                sprintf(buf,"%d",pData.runningtime);
+                char *argv[] = { "./process.out",buf, 0 };
+                execve(argv[0], &argv[0], NULL);
+            }
+            sleep(1000);
+            //Update pcb and calculate the process data after finishing it
+            pcbPointer->executionTime=pData.runningtime;    
+            pcbPointer->waitingTime=getClk()-(pData.arrivaltime)-(pcbPointer->executionTime);
+            pcbPointer->state=Finished;
+            pcbPointer->remainingTime=0;
+            int TA = getClk()-(pData.arrivaltime);
+            double WTA=(double)TA/pData.runningtime;
+            fprintf(logFile, "At time %d process %d finished arr %d total %d remain %d wait %d TA %d WTA %.2f\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime, TA, WTA);
+            sum_WTA+=WTA;
+            WTAArray[pData.id] = WTA;
+            sum_Waiting+=pcbPointer->waitingTime;
+            sum_RunningTime+=pcbPointer->executionTime;
+        }
+
+        break;
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////        
+        
+        
+
+
+        //SRTN
+        case 2:
+
+        //Recieving the processes sent by the process generator
+        receive = msgrcv(msgqid, &message, sizeof(message.mData), 0, !IPC_NOWAIT);
+        printf("\nProcess with Pid = %d recieved\n",message.mData.id);
+        pData = message.mData;
+        push(&SRTN_readyQueue, pData.runningtime, pData); //enqueue the data in the ready queue
+        if(receive!=-1)
+        {
+            //Creating PCB
+            pcbBlock.state = 0;
+            pcbBlock.executionTime = 0;
+            pcbBlock.remainingTime = pData.runningtime;
+            pcbBlock.waitingTime = 0;
+            
+            insertFirst(pData.id, pcbBlock);
+            printf("\nPCB created for process with Pid = %d\n",pData.id);
+        }
+
+        while(getlength(&SRTN_readyQueue)!=0)
+        {
+            receive = msgrcv(msgqid, &message, sizeof(message.mData), 0, IPC_NOWAIT);
+            while(receive!=-1)
+            {
+                printf("\n Current time is: %d\n", getClk());
+                printf("\nProcess with Pid = %d recieved\n",message.mData.id);
+                pData = message.mData;
+                push(&SRTN_readyQueue, pData.runningtime, pData);
+            
+                //Creating PCB
+                pcbBlock.state = 0;
+                pcbBlock.executionTime = 0;
+                pcbBlock.remainingTime = pData.runningtime;
+                pcbBlock.waitingTime = 0;   
+                insertFirst(pData.id, pcbBlock);
+                
+                printf("\nPCB created for process with Pid = %d\n",pData.id);
+                receive = msgrcv(msgqid, &message, sizeof(message.mData), 0, IPC_NOWAIT);
             }
 
-        }
-        else if (process.idNum == 1000) //dummy variable for
-        {
-            //printf("\n dummy variable arrived bro \n");
-            if (processRunning == false) //if a process is not running outside schedule a new process else continue sleeping and recieving
-            {
-                //printf("\n i am breaking \n");
-                return;
-            }
-        }
-        else if (process.idNum == 2000)
-        {
-            totalNumberProcesses = arrivedNumber;
-            allProcessesArrived = true;
-            //printf("\n i the scheduler recieved all processes info \n");
-            if (processRunning == false) // in case all arrived at the same time
-            {
-                break;
-            }
-        }
-        else
-        {
-            if (processRunning == true && process.runtimeNum < currProcess->remainingtime - (getClk() - startingTime) && mode == 2) //there is a process with a less remaining time
-            {
-                if (currProcess->state == 1) //if the process state is running
-                {
-                    pauseProcess();
-                }
-            }
-            addProcesstoPCB(process);
-        }
-    }
-    //printf("\n here \n");
-}
-void addProcesstoPCB(Process process)
-{
-    struct nodePCB *newdata = (struct nodePCB *)malloc(sizeof(struct nodePCB));
-    newdata->processid = process.idNum;
-    newdata->priority = process.priorityNum;
-    newdata->runtime = process.runtimeNum;
-    newdata->remainingtime = process.runtimeNum;
-    newdata->arrival = process.arrivalTime;
-    newdata->state = 0;
-    newdata->lastexectime = 0;
-    newdata->wait = 0;
-    newdata->pid = -1;
-    newdata->memsize=memorysizes[process.idNum-1];
-    int startMem, endMemo = 0;
-    allocate(newdata->memsize,&startMem,&endMemo);
-    newdata->startingmem=startMem;
-    newdata->endmem=endMemo;
-    fflush(mem);
-    fprintf(mem,"At time %d allocated %d bytes for process %d from %d to %d \n",process.arrivalTime,newdata->memsize,newdata->processid,newdata->startingmem,newdata->endmem);
-    fflush(mem);
-    runningTimeSum+=newdata->runtime;
-    insertPCB(newdata);
-    //printf("\n id %d prio %d runtime %d at arrival time %d with memory %d \n", process.idNum, process.priorityNum, process.runtimeNum, process.arrivalTime,newdata->memsize);
-    if (mode == 3) //ROund Robin
-    {
-        insert(process.idNum); //to add the index
-    }
-    arrivedNumber++;
-}
-void forkProcess(int processid, char *argv[])
-{
-    *process_quantum = currProcess->runtime; //total runtime
-    scheduleprocesspid = fork();
-    if (scheduleprocesspid == 0) //run the process with the remaining time as quantum FCFS
-    {
-        execvp("./process.out", argv);
-    }
-    else if (scheduleprocesspid == -1)
-    {
-        //printf("There is an error while calling fork()");
-    }
-    else
-    {
-        currProcess->pid = scheduleprocesspid; //set the process pid so we dont fork again
-    }
-}
-// Handlers area
-void processDone(int signum)
-{
-    finishCLk = getClk();
-    release(memArray,currProcess->startingmem,currProcess->endmem);
-    currProcess->remainingtime = 0; //UPDATE REAMIN TIME
-    int TA = (finishCLk - currProcess->arrival);
-    float WTA = ((float)(finishCLk - currProcess->arrival)) / currProcess->runtime;
-    waitingsum += currProcess->wait;
-    WTAsum += WTA;
-    WTAsumsquared += (WTA * WTA);
-    finished++;
-    //printf("\nnumber of finished is %d and finished clock is %d and the id is %d \n ", finished, finishCLk, processid + 1);
-    fflush(mem);
-    fprintf(mem,"At time %d freed %d bytes from process %d from %d to %d \n",finishCLk,currProcess->memsize,currProcess->processid,currProcess->startingmem,currProcess->endmem);
-    fflush(mem);
-    fflush(fptr);
-    fprintf(fptr, "At time %d process %d finished arr %d total %d remain %d wait %d TA %d WTA %.2f \n", finishCLk, currProcess->processid, currProcess->arrival, currProcess->runtime, currProcess->remainingtime, currProcess->wait, TA, WTA);
-    fflush(fptr);
-    if (mode == 3)
-    {
-                it_val.it_value.tv_sec =0;
-                it_val.it_value.tv_usec =0;
-                it_val.it_interval.tv_sec = 0;
-                it_val.it_interval.tv_usec=0;
-        if (setitimer(ITIMER_REAL, &it_val, NULL) == -1)
-        {
-            perror("error calling setitimer()");
-            exit(1);
-        }
-        //alarm(0);
-        deleteNode((ptrTraverse)->data); //delete the element that finished
-    }
-    deletePCB(currProcess->processid); // delete the PCB after finish
-    processRunning = false;            //to allow other processes to work
-    signal(SIGUSR1, processDone);
-}
-void alarmDone(int signum)
-{
-    //printf("\n time is over \n");
-         //get the pausing time
-    pauseClk = getClk(); 
-    pauseProcess();
-}
-
-void pauseProcess()
-{
-    down(sem);
-    kill(currProcess->pid, SIGSTOP); //stop current process
-    up(sem);
-    if(mode==2)
-    {
-        pauseClk = getClk(); 
-    
-    //printf("\n quantum has finished of process %d at time %d \n", proscessid, pauseClk);
-    currProcess->lastexectime = pauseClk;
-    currProcess->remainingtime = currProcess->remainingtime-(pauseClk-startingTime);
-    // if(currProcess->remainingtime<=0)
-    // {
-    //     kill(getpid(),SIGUSR1);
-    //     return;
-    // }
-    fflush(fptr);
-    fprintf(fptr, "At time %d process %d stopped  arr %d total %d remain %d wait %d\n",pauseClk, currProcess->processid, currProcess->arrival, currProcess->runtime, currProcess->remainingtime, currProcess->wait);
-    fflush(fptr);
-    printf("\nAt time %d process %d stopped  arr %d total %d remain %d wait %d\n",pauseClk, currProcess->processid, currProcess->arrival, currProcess->runtime, currProcess->remainingtime, currProcess->wait);
-
-    processRunning = false;
-    currProcess->state = 0; //back to ready
-}
-
-void allocate(int size, int *startA, int *endA)
-{
-    float index = log((double)size) / log(2.0);
-    if (index != (int)index) //it is a float then round
-    {
-        index = (int)(index + 1);
-    }
-    if (memArray[(int)index] == NULL) //there are no free spaces in the desired memory
-    {
-        int finishindex = -1;
-        for (int i = index + 1; i <= 10; i++) //backtrace to divide memory
-        {
-            if (memArray[i] == NULL)
-            {
+            pData = pop (&SRTN_readyQueue);
+            if(pData.id==-1){  //if the process is finished skip this iteration 
                 continue;
             }
+            //find the PCB of the poped process
+            pcbFind = find(pData.id);
+            pcbPointer = &(pcbFind->data);
+            
+            if(pcbPointer->state == Waiting)
+            {
+                fprintf(logFile, "At time %d process %d resumed arr %d total %d remain %d wait %d\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime);
+                ResumeProcess();
+                printf("\nCurrent time is: %d\n", getClk());
+                alarm(1); 
+                sleep(50);
+
+                if(pcbPointer->state!=Finished)
+                {
+                    printf("\nThe process with Pid = %d is not finished yet \n",pcbPointer->pid);
+                    push(&SRTN_readyQueue,pcbPointer->remainingTime , pData);
+                    //Update PCB
+                    pcbPointer->executionTime+=1;
+                    pcbPointer->waitingTime=getClk()-(pData.arrivaltime)-(pcbPointer->executionTime);
+                    pcbPointer->state=Waiting;
+                    pcbPointer->remainingTime-=1;
+                   
+                    fprintf(logFile, "At time %d process %d stopped arr %d total %d remain %d wait %d\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime);
+                }
+                else
+                {
+                    pcbPointer->executionTime=pData.runningtime;
+                    pcbPointer->waitingTime=getClk()-(pData.arrivaltime)-(pcbPointer->executionTime);
+                    pcbPointer->remainingTime=0;                    
+                    int TA = getClk()-(pData.arrivaltime);                    
+                    double WTA=(double)TA/pData.runningtime;
+
+                    fprintf(logFile, "At time %d process %d finished arr %d total %d remain %d wait %d TA %d WTA %.2f\n", 
+                        getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime, TA,WTA);
+                    
+                    sum_WTA+=WTA;
+                    sum_Waiting+=pcbPointer->waitingTime;
+                    sum_RunningTime+=pcbPointer->executionTime;                            
+                    pData.id=-1;
+                }
+            }    
             else
             {
-                finishindex = i;
-                break;
+                //Fork the process
+                printf("\nIam forking a new process \n");
+                int pid=fork();
+                pcbPointer->pid=pid;
+                if (pid == -1)
+                    perror("error in forking");
+                else if (pid == 0)
+                {
+                    printf("\ntesting the fork\n");
+                    char buf[100];
+                    sprintf(buf,"%d",pData.runningtime);
+                    char *argv[] = { "./process.out",buf, 0 };
+                    execve(argv[0], &argv[0], NULL);
+                }
+
+                pcount--;
+                pcbPointer->waitingTime=getClk()-(pData.arrivaltime);
+                printf("\nAt time %d process %d started arr %d total %d remain %d wait %d\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime);
+                fprintf(logFile, "At time %d process %d started arr %d total %d remain %d wait %d\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime);
+                alarm(1);
+                sleep(50);  
+
+                if(pcbPointer->state!=Finished)
+                {
+                    printf("Not Finished\n");
+                    push (&SRTN_readyQueue, pcbPointer->remainingTime, pData);
+
+                    pcbPointer->executionTime+=1;
+                    pcbPointer->waitingTime=getClk()-(pData.arrivaltime)-(pcbPointer->executionTime);
+                    pcbPointer->state=Waiting;
+                    pcbPointer->remainingTime-=1;
+
+                    fprintf(logFile, "At time %d process %d stopped arr %d total %d remain %d wait %d\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime);
+                }
+                else
+                {
+                    pcbPointer->executionTime=pData.runningtime;
+                    pcbPointer->waitingTime=getClk()-(pData.arrivaltime)-(pcbPointer->executionTime);
+                    pcbPointer->remainingTime=0;
+                    int TA = getClk()-(pData.arrivaltime);
+                    double WTA=(double)TA/pData.runningtime;
+
+                    fprintf(logFile, "At time %d process %d finished arr %d total %d remain %d wait %d TA %d WTA %.2f\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime, TA, WTA);
+ 
+                    sum_WTA+=WTA;
+                    WTAArray[pData.id] = WTA;
+                    sum_Waiting+=pcbPointer->waitingTime;
+                    sum_RunningTime+=pcbPointer->executionTime;      
+                    pData.id=-1;
+                        
+                }
+            }   
+        } 
+
+        break;
+
+
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+        //RR
+        case 3:
+        receive = msgrcv(msgqid, &message, sizeof(message.mData), 0, !IPC_NOWAIT);
+        printf("\nRecieved rec val is: %d \n",receive);
+        pData = message.mData;
+        enqueue(&RR_readyQueue, &pData); //enqueue the data in the ready queue
+        printf("\n%d %d %d %d\n",pData.id,pData.arrivaltime,pData.runningtime,pData.priority);
+        if(receive!=-1)
+            {
+                //Allocate Memory
+                //Get the power of 2 value of size
+                int size = pow(2,ceil(log(pData.sizeP)/log(2)));
+                int address = Allocate_memory(size);
+                fprintf(sizeP, "\nAt time %d allocated %d bytes for process %d from %d to %d\n", getClk(), pData.sizeP, pData.id, address,address+size-1);
+
+
+                //Creating PCB
+                pcbBlock.state = 0;
+                pcbBlock.executionTime = 0;
+                pcbBlock.remainingTime = pData.runningtime;
+                pcbBlock.waitingTime = 0;
+                pcbBlock.mem_address=address;
+                insertFirst(pData.id, pcbBlock);
+                printf("\nPCB created\n");
             }
+        
+        while(getQueueSize(&RR_readyQueue)!=0 || pcount!=0)
+        {   
+            receive = msgrcv(msgqid, &message, sizeof(message.mData), 0, IPC_NOWAIT);
+            printf("from the receive at the end of the while loop %d\n",receive);
+            while(receive!=-1)
+            {
+                printf("\n Current time is: %d\n", getClk());
+                printf("\nRecieved rec val is: %d \n",receive);
+                pData = message.mData;
+                enqueue(&RR_readyQueue, &pData);
+                printf("\n%d %d %d %d\n",pData.id,pData.arrivaltime,pData.runningtime,pData.priority);
+                
+                //Allocate Memory
+                //Get the power of 2 value of size
+                int size = pow(2,ceil(log(pData.sizeP)/log(2)));
+                int address = Allocate_memory(size);
+                fprintf(sizeP, "\nAt time %d allocated %d bytes for process %d from %d to %d\n", getClk(), pData.sizeP, pData.id, address,address+size-1);
+
+                 //Creating PCB
+                pcbBlock.state = 0;
+                pcbBlock.executionTime = 0;
+                pcbBlock.remainingTime = pData.runningtime;
+                pcbBlock.waitingTime = 0;
+                pcbBlock.mem_address=address;
+                insertFirst(pData.id, pcbBlock);
+                printf("\nPCB created\n");
+                receive = msgrcv(msgqid, &message, sizeof(message.mData), 0, IPC_NOWAIT);
+            }
+            
+            sscanf(argv[3], "%d", &quantum);
+            dequeue(&RR_readyQueue, &pData); //dequeue a process to run
+            if(pData.id==-1){  //if the process is finished skip this iteration 
+                continue;
+            }
+            printf("id is %d\n",pData.id);
+            //find the PCB of the dequeued process
+            pcbFind = find(pData.id);
+            pcbPointer = &(pcbFind->data);
+            printf("the state of the pcb i found is %d\n",pcbPointer->state);
+            
+            if(pcbPointer->state==Waiting)
+            {
+
+                pcbPointer->waitingTime = getClk()-(pData.arrivaltime)-(pcbPointer->executionTime);
+                sum_Waiting+=pcbPointer->waitingTime;
+                fprintf(logFile, "At time %d process %d resumed arr %d total %d remain %d wait %d\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime);
+                ResumeProcess();
+                printf("\nCurrent time before alarm is: %d\n", getClk());
+                alarm(quantum);
+                sleep(50);
+                printf("\nCurrent time after alarm is: %d\n", getClk());
+
+                
+                if(pcbPointer->state!=Finished)
+                {
+                    enqueue(&RR_readyQueue,&pData);
+                    //Update PCB
+                    
+                    pcbPointer->executionTime+=quantum;
+                    pcbPointer->state=Waiting;
+                    pcbPointer->remainingTime-=quantum;
+                   
+                    fprintf(logFile, "At time %d process %d stopped arr %d total %d remain %d wait %d\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime);
+                    
+                }
+                else
+                {
+                    pcbPointer->executionTime=pData.runningtime;
+                    pcbPointer->waitingTime=getClk()-(pData.arrivaltime)-(pcbPointer->executionTime);
+                    pcbPointer->remainingTime=0;
+                    int TA = getClk()-(pData.arrivaltime);
+                    double WTA=(double)TA/pData.runningtime;
+                    fprintf(logFile, "At time %d process %d finished arr %d total %d remain %d wait %d TA %d WTA %.2f\n", 
+                        getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime, TA,WTA);
+                    sum_WTA+=WTA;
+                    WTAArray[pData.id] = WTA;
+                    sum_Waiting+=pcbPointer->waitingTime;
+                    sum_RunningTime+=pcbPointer->executionTime;
+
+                   //Deallocate memory for the finished process
+                    int size = pow(2,ceil(log(pData.sizeP)/log(2)));
+                    DeAllocate_memory(pcbPointer->mem_address,size);
+                    fprintf(sizeP, "\nAt time %d deallocated %d bytes for process %d from %d to %d\n", getClk(), pData.sizeP, pData.id, pcbPointer->mem_address, pcbPointer->mem_address+size-1);
+                    pData.id=-1;
+
+                }
+                
+            }
+            else
+            {
+                //Fork the process
+                printf("\n I am forking a new process now\n");
+                int pid=fork();
+                pcount--;
+                pcbPointer->pid=pid;
+                if (pid == -1)
+                perror("error in fork");
+
+                else if (pid == 0)
+                {
+                    printf("\ntesting the fork\n");
+                    char buf[100];
+                    sprintf(buf,"%d",pData.runningtime);
+                    char *argv[] = { "./process.out",buf, 0 };
+                    execve(argv[0], &argv[0], NULL);
+                    
+                }
+                printf("I am setting the alarm for: %d \n",quantum);
+                t1=getClk();
+                printf("\nCurrent time before alarm is: %d\n", getClk());
+                if (pData.arrivaltime==getClk()) pcbPointer->waitingTime=0;
+                else pcbPointer->waitingTime = getClk()-pData.arrivaltime;
+
+                fprintf(logFile, "At time %d process %d started arr %d total %d remain %d wait %d\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime);
+                
+                
+                alarm(quantum);
+                sleep(500);
+                printf("\nCurrent time after alarm is: %d\n", getClk());
+                
+                //Update PCB
+                
+                if(pcbPointer->state!=Finished)
+                {
+                    printf("Not Finished\n");
+                    enqueue(&RR_readyQueue,&pData);
+                    if (pcbPointer->remainingTime>quantum)
+                    {
+                        
+                        pcbPointer->executionTime+=quantum;
+                        pcbPointer->state=Waiting;
+                        pcbPointer->remainingTime-=quantum;
+                        fprintf(logFile, "At time %d process %d stopped arr %d total %d remain %d wait %d\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime);
+                        
+                    }
+                    else 
+                    {
+                        pcbPointer->executionTime += pcbPointer->remainingTime;
+                        pcbPointer->remainingTime=0;
+                        int TA = getClk()-(pData.arrivaltime);
+                        double WTA=(double)TA/pData.runningtime;
+                        fprintf(logFile, "2At time %d process %d finished arr %d total %d remain %d wait %d TA %d WTA %.2f\n", 
+                            getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime, TA, WTA);
+                        sum_WTA+=WTA;
+                        WTAArray[pData.id] = WTA;
+                        sum_Waiting+=pcbPointer->waitingTime;
+                        sum_RunningTime+=pcbPointer->executionTime;
+
+                        //Deallocate memory for the finished process
+                        int size = pow(2,ceil(log(pData.sizeP)/log(2)));
+                        DeAllocate_memory(pcbPointer->mem_address,size);
+                        fprintf(sizeP, "\nAt time %d deallocated %d bytes for process %d from %d to %d\n", getClk(), pData.sizeP, pData.id, pcbPointer->mem_address, pcbPointer->mem_address+size-1);
+                        pData.id=-1;
+
+
+                    }
+                    
+                }
+                else
+                {
+                    pcbPointer->executionTime=pData.runningtime;
+                    pcbPointer->waitingTime=getClk()-(pData.arrivaltime)-(pcbPointer->executionTime);
+                    pcbPointer->remainingTime=0;
+                    int TA = getClk()-(pData.arrivaltime);
+                    double WTA=(double)TA/pData.runningtime;
+                    fprintf(logFile, "At time %d process %d finished arr %d total %d remain %d wait %d TA %d WTA %.2f\n", 
+                        getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime, TA, WTA);
+                    sum_WTA+=WTA;
+                    WTAArray[pData.id] = WTA;
+                    sum_Waiting+=pcbPointer->waitingTime;
+                    sum_RunningTime+=pcbPointer->executionTime;
+
+                   //Deallocate memory for the finished process
+                    int size = pow(2,ceil(log(pData.sizeP)/log(2)));
+                    DeAllocate_memory(pcbPointer->mem_address,size);
+                    fprintf(sizeP, "\nAt time %d deallocated %d bytes for process %d from %d to %d\n", getClk(), pData.sizeP, pData.id, pcbPointer->mem_address, pcbPointer->mem_address+size-1);
+                    pData.id=-1;
+
+                }
+            }
+           
         }
-        if (finishindex == -1)
+    
+       
+        break;
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+        //SJF
+        case 4:
+        receive= msgrcv(msgqid, &message, sizeof(message.mData), 0, !IPC_NOWAIT);
+        pData = message.mData;
+        printf("\nTime = %d process with id = %d recieved\n", getClk(), pData.id);
+        
+
+        //enqueue the process in the ready queue
+        push(&SJF_readyQueue, pData.runningtime, pData);
+       
+        //Allocate Memory
+        //Get the power of 2 value of size
+        int size = pow(2,ceil(log(pData.sizeP)/log(2)));
+        int address = Allocate_memory(size);
+        fprintf(sizeP, "\nAt time %d allocated %d bytes for process %d from %d to %d\n", getClk(), pData.sizeP, pData.id, address,address+size);
+
+        //Create PCB
+        pcbBlock.state = 0;
+        pcbBlock.executionTime = 0;
+        pcbBlock.remainingTime = pData.runningtime;
+        pcbBlock.waitingTime = 0;
+        pcbBlock.mem_address = address;
+        insertFirst(pData.id, pcbBlock);
+        printf("\nPCB created for process with id = %d\n", pData.id);
+
+        while (pcount!=0)
         {
-            return; //we cannot allocate this memory
+            printf("\nThe current time = %d\n", getClk());
+            receive = msgrcv(msgqid, &message, sizeof(message.mData), 0, IPC_NOWAIT);
+            while (receive != -1)
+            {
+                pData = message.mData;
+                printf("\nTime = %d process with id = %d recieved\n", getClk(), pData.id);
+                push(&SJF_readyQueue, pData.runningtime, pData); //enqueue the data in the ready queue
+                //Allocate Memory
+                //Get the power of 2 value of size
+                int size = pow(2,ceil(log(pData.sizeP)/log(2)));
+                int address = Allocate_memory(size);
+                fprintf(sizeP, "\nAt time %d allocated %d bytes for process %d from %d to %d\n", getClk(), pData.sizeP, pData.id, address,address+size);
+
+                //Creating PCB
+                pcbBlock.state = 0;
+                pcbBlock.executionTime = 0;
+                pcbBlock.remainingTime = pData.runningtime;
+                pcbBlock.waitingTime = 0;
+                pcbBlock.mem_address = address;
+            
+                insertFirst(pData.id, pcbBlock);
+                printf("\nPCB created for process with id = %d\n", pData.id);
+                receive = msgrcv(msgqid, &message, sizeof(message.mData), 0, IPC_NOWAIT);
+                
+            }
+            pData=pop(&SJF_readyQueue);
+            //find the pcb of the poped process
+            pcbFind = find(pData.id);
+            pcbPointer = &(pcbFind->data);
+            pcbPointer->waitingTime=getClk()-(pData.arrivaltime)-(pcbPointer->executionTime);
+            //write in the Log file the process data
+            fprintf(logFile, "At time %d process %d started arr %d total %d remain %d wait %d\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime);
+
+            //fork the process
+            printf("\nIam forking a new process time = %d\n", getClk());
+            int pid=fork();
+            pcount--;
+            pcbPointer->pid=pid;
+            if (pid == -1)
+            perror("error in forking");
+
+            else if (pid == 0)
+            {
+                printf("\ntest the forking\n");
+                char buf[20];
+                sprintf(buf,"%d",pData.runningtime);
+                char *argv[] = { "./process.out",buf, 0 };
+                execve(argv[0], &argv[0], NULL);
+            }
+            sleep(50);
+            //Update pcb and calculate the process data after finishing it
+            pcbPointer->executionTime=pData.runningtime;
+            pcbPointer->waitingTime=getClk()-(pData.arrivaltime)-(pcbPointer->executionTime);
+            pcbPointer->state=Finished;
+            pcbPointer->remainingTime=0;
+            int TA = getClk()-(pData.arrivaltime);
+            double WTA=(double)TA/pData.runningtime;
+            fprintf(logFile, "At time %d process %d finished arr %d total %d remain %d wait %d TA %d WTA %.2f\n", getClk(), pData.id, pData.arrivaltime, pData.runningtime, pcbPointer->remainingTime, pcbPointer->waitingTime, TA, WTA);
+            sum_WTA+=WTA;
+            WTAArray[pData.id] = WTA;
+            sum_Waiting+=pcbPointer->waitingTime;
+            sum_RunningTime+=pcbPointer->executionTime;
+            //Deallocate the memory 
+            size = pow(2,ceil(log(pData.sizeP)/log(2)));
+            DeAllocate_memory(pcbPointer->mem_address, size);
+            fprintf(sizeP, "\nAt time %d deallocated %d bytes for process %d from %d to %d\n", getClk(), pData.sizeP, pData.id, pcbPointer->mem_address,pcbPointer->mem_address+size);
+
         }
-        for (int i = finishindex; i > index; i--)
-        {
-            int startindex = memArray[i]->starting;
-            int endindex = memArray[i]->end;
-            int medianindex = (startindex + (endindex + 1)) / 2;
-            int start1new = startindex;
-            int end1new = medianindex - 1;
-            int start2new = medianindex;
-            int end2new = endindex;
-            insertmem(memArray, i - 1, start1new, end1new);
-            insertmem(memArray, i - 1, start2new, end2new);
-            deleteHead(memArray, i); //delete the head;
-        }
+        break;
+
     }
-    *startA = memArray[(int)index]->starting;
-    *endA = memArray[(int)index]->end;
-    deleteHead(memArray, index);
+    fclose(logFile);
+    double stdWTA = 0.00;
+    double avgWTA =(sum_WTA/Num_processes);
+    for(int i = 0; i < Num_processes; i++){
+        stdWTA += pow((WTAArray[i]-avgWTA),2);
+    }
+    fprintf(prefFile,"CPU Utilization = %.2f %%\n",(sum_RunningTime/getClk())*100);
+    fprintf(prefFile,"Avg WTA = %.2f\n",(sum_WTA/Num_processes));
+    fprintf(prefFile,"Avg Waiting = %.2f\n",sum_Waiting/Num_processes);
+    fprintf(prefFile,"Std WTA = %.2f\n",sqrt(stdWTA/Num_processes));
+    fclose(prefFile);
+ 
+    //upon termination release the clock resources
+    
+    destroyClk(false);
+
+    
+
 }
 
-void release(struct memory **memory, int starting, int end)
+
+void Handler(int signum)
 {
-    int index = log((double)(end - starting + 1)) / log(2.0);
-    if (index == 10) //breaking condition no more merging after that
-    {
-        insertmem(memory, 10, starting, end);
-        return;
-    }
-    struct memory *traverse = memory[index];
-    float check = (float)starting / (pow(2, index + 1));
-    bool condition = (float)starting / (pow(2, index + 1)) == (int)(starting / (pow(2, index + 1))); //if true it is starting point , else it is end point
-    //checking for merging
-    while (traverse != NULL)
-    {
-        if (condition == true)
+    printf("Handler started\n");
+    printf("from sig child pid is %d\n",pcbPointer->pid);
+    int pid,stat_loc;
+    pid = wait(&stat_loc);
+    t2=getClk();
+    if(WIFEXITED(stat_loc)){
+        if(WEXITSTATUS(stat_loc)==0)
         {
-            if (end == (traverse->starting - 1)) //we found a merging
+            printf("\nProcess Finished\n");
+            pcbPointer->state=Finished;
+            pcbPointer->executionTime+=(t2-t1);
+            pcbPointer->remainingTime=0;
+        }
+    }
+}
+
+int Allocate_memory(int size)
+{
+    switch (size)
+    {
+    case 32:
+        for (int i = 0; i < 32; i++)
+        {
+            if(blocks_32[i]!=-1)
             {
-                int en = traverse->end;
-                deleteMemory(memory, index, traverse->starting, traverse->end);
-                release(memory, starting, en); //merge blocks
-                return;
+                blocks_32[i]=-1;
+                return i*size;
+            }
+
+        }
+
+
+        for (int i = 0; i < 16; i++)
+        {
+            if(blocks_64[i]!=-1)
+            {
+                blocks_32[2*i+1]=(2*i+1)*size;
+                blocks_64[i]=-1;
+                return (2*i)*size;
+            }
+
+        }
+
+        for (int i = 0; i < 8; i++)
+        {
+            if(blocks_128[i]!=-1)
+            {
+                blocks_64[2*i+1]=(2*i+1)*2*size;
+                blocks_32[4*i+1]=(4*i+1)*size;
+                blocks_128[i]=-1;
+                return (4*i)*size;
+            }
+
+        }
+        for (int i = 0; i < 4; i++)
+        {
+            if(blocks_256[i]!=-1)
+            {
+                blocks_128[2*i+1]=(2*i+1)*4*size;
+                blocks_64[4*i+1]=(4*i+1)*2*size;
+                blocks_32[8*i+1]=(8*i+1)*size;
+                blocks_256[i]=-1;
+                return (8*i)*size;
             }
         }
-        else
+
+        printf("\n\n Warning! There's no enough space in memory for this process\n");
+        
+        break;
+
+    case 64:
+        for (int i = 0; i < 16; i++)
         {
-            if (traverse->end + 1 == starting)
+            if(blocks_64[i]!=-1)
             {
-                int st = traverse->starting;
-                deleteMemory(memory, index, traverse->starting, traverse->end);
-                release(memory, st, end);
-                return;
+
+                blocks_64[i]=-1;
+                return (i)*size;
             }
         }
-        traverse = traverse->next;
+        for (int i = 0; i < 8; i++)
+        {
+            if(blocks_128[i]!=-1)
+            {
+
+                blocks_64[2*i+1]=(2*i+1)*size;
+                blocks_128[i]=-1;
+                return (2*i)*size;
+            }
+        }
+        for (int i = 0; i < 4; i++)
+        {
+            if(blocks_256[i]!=-1)
+            {
+
+                blocks_128[2*i+1]=(2*i+1)*2*size;
+                blocks_64[4*i+1]=(4*i+1)*size;
+                blocks_256[i]=-1;
+                return (4*i)*size;
+            }
+        }
+        printf("\n\n Warning! There's no enough space in memory for this process\n");
+        break;
+
+    case 128:
+        for (int i = 0; i < 8; i++)
+        {
+
+            if(blocks_128[i]!=-1)
+            {
+                blocks_128[i]=-1;
+                return (i)*size;
+            }
+        }
+        for (int i = 0; i < 4; i++)
+        {
+
+            if(blocks_256[i]!=-1)
+            {
+                blocks_128[2*i+1]=(2*i+1)*size;
+                blocks_256[i]=-1;
+                return (2*i)*size;
+            }
+        }
+        printf("\n\n Warning! There's no enough space in memory for this process\n");
+        break;
+
+    case 256:
+        for (int i = 0; i < 4; i++)
+        {
+
+            if(blocks_256[i]!=-1)
+            {
+                blocks_256[i]=-1;
+                return (i)*size;
+            }
+        }
+        printf("\n\n Warning! There's no enough space in memory for this process\n");
+        break;
+
     }
-    //there are no merging points just insert the
-    insertmem(memory, index, starting, end);
+}
+
+void DeAllocate_memory(int address, int size)
+{
+    int ratio=address/size;
+    switch (size)
+    {
+    case 32:
+
+
+        blocks_32[ratio]=address;
+
+        break;
+    
+    case 64:
+        blocks_64[ratio]=address;
+
+        break;
+    
+    case 128:
+
+        blocks_128[ratio]=address;
+
+        break;
+
+    case 256:
+
+        blocks_256[ratio]=address;
+
+        break;
+    }
+
+    printf("\n [256] Memory Blocks: \n");
+    for (int i = 0; i < 4 ; i++) printf("%d\t", blocks_256[i]);
+
+    printf("\n[128] Memory Blocks:\n");
+    for (int i = 0; i < 8; i++) printf("%d\t", blocks_128[i]);
+
+    printf("\n[64] Memory Blocks:\n");
+    for (int i = 0; i < 16; i++) printf("%d\t", blocks_64[i]);
+
+    printf("\n[32] Memory Blocks:\n");
+    for (int i = 0; i < 32; i++) printf("%d\t", blocks_32[i]);
+
+    printf("\n\n");
+
+
+    Merge(address, size);
+
+
+    printf("\n [256] Memory Blocks: \n");
+    for (int i = 0; i < 4 ; i++) printf("%d\t", blocks_256[i]);
+
+    printf("\n[128] Memory Blocks:\n");
+    for (int i = 0; i < 8; i++) printf("%d\t", blocks_128[i]);
+
+    printf("\n[64] Memory Blocks:\n");
+    for (int i = 0; i < 16; i++) printf("%d\t", blocks_64[i]);
+
+    printf("\n[32] Memory Blocks:\n");
+    for (int i = 0; i < 32; i++) printf("%d\t", blocks_32[i]);
+
+    printf("\n\n");
+}
+
+void Merge(int address, int size)
+{
+    //Implementation of merging memory blocks goes here
+    switch (size)
+    {
+    case 32:
+        for (int i = 0; i< 32; i+=2)
+        {
+          if (blocks_32[i] != -1 && blocks_32[i+1] != -1)
+          {
+           blocks_64[i/2]= i*size;
+           blocks_32[i] = -1;
+           blocks_32[i+1]=-1;
+           printf("\nmemory 32 merged successfully\n");
+          }
+        } 
+
+        for (int i = 0; i < 16; i+=2)
+        {
+            if (blocks_64[i] != -1 && blocks_64[i+1] != -1)
+            {
+                blocks_128[i/2] = 2*i*size;
+                blocks_64[i] = -1;
+                blocks_64[i+1] = -1;
+                printf("\nmemory 64 merged successfully\n");
+            }
+        }
+
+        for (int i = 0; i < 8; i +=2)
+        {
+            if (blocks_128[i] != -1 && blocks_128[i+1] != -1)
+            {
+                blocks_256[i/2] = 4*i*size;
+                blocks_128[i] = -1;
+                blocks_128[i+1] = -1;
+                printf("\nmemory 128 merged successfully\n");
+            }
+        }
+        break;
+    
+    case 64:
+        for (int i = 0; i < 16; i+= 2)
+        {
+            if (blocks_64[i] != -1 && blocks_64[i+1] != -1)
+            {
+                blocks_128[i/2] = i*size;
+                blocks_64[i] = -1;
+                blocks_64[i+1] = -1;
+                printf("\nmemory 64 merged successfully\n");
+            }
+        }
+
+          for (int i = 0; i < 8; i +=2)
+        {
+            if (blocks_128[i] != -1 && blocks_128[i+1] != -1)
+            {
+                blocks_256[i/2] = 2*i*size;
+                blocks_128[i] = -1;
+                blocks_128[i+1] = -1;
+                printf("\nmemory 128 merged successfully\n");
+            }
+        }
+
+        break;
+
+    case 128:
+        for (int i = 0; i < 8; i +=2)
+        {
+            if (blocks_128[i] != -1 && blocks_128[i+1] != -1)
+            {
+                blocks_256[i/2] = i*size;
+                blocks_128[i] = -1;
+                blocks_128[i+1] = -1;
+                printf("\nmemory 128 merged successfully\n");
+            }
+        }
+        break;
+    }
+
 }
